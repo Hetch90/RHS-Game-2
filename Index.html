@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mila & Elfie RPG - Pixel Style</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #2c3e50;
+            font-family: 'Segoe UI', sans-serif;
+            touch-action: none;
+            user-select: none;
+        }
+        canvas { 
+            display: block; 
+            /* WICHTIG FÜR PIXEL ART: Verhindert unscharfe Skalierung */
+            image-rendering: pixelated; 
+            image-rendering: -moz-crisp-edges;
+            image-rendering: crisp-edges;
+        }
+
+        /* UI Layer (Über dem Canvas) */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between;
+        }
+        #loading-screen {
+            position: absolute; top:0; left:0; width:100%; height:100%; background:#2c3e50; color:white; display:flex; justify-content:center; align-items:center; font-size: 24px; z-index: 100;
+        }
+        .top-panel {
+            padding: 15px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+            color: white; font-weight: bold; text-shadow: 1px 1px 2px black;
+            display: flex; gap: 20px; font-size: 18px;
+        }
+        .status { display: flex; align-items: center; gap: 5px; }
+        .bar-bg { width: 100px; height: 10px; background: #333; border-radius: 5px; overflow: hidden; border: 1px solid #555; }
+        #stamina-bar { height: 100%; background: #f1c40f; width: 100%; }
+        #distract-bar { height: 100%; background: #e74c3c; width: 0%; }
+
+        /* Controls unten */
+        .controls-panel {
+            pointer-events: auto;
+            padding: 20px;
+            display: flex; justify-content: space-between; align-items: flex-end;
+        }
+        /* Joystick - etwas transparenter für den neuen Look */
+        #joystick-base {
+            width: 130px; height: 130px;
+            background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 50%; position: relative; backdrop-filter: blur(2px);
+        }
+        #joystick-stick {
+            width: 60px; height: 60px; background: rgba(255,255,255,0.5);
+            border-radius: 50%; position: absolute; top: 35px; left: 35px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        /* Buttons */
+        .btn-group { display: flex; flex-direction: column; gap: 15px; }
+        .game-btn {
+            width: 75px; height: 75px; border-radius: 50%; border: none;
+            color: white; font-size: 14px; font-weight: bold;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4); cursor: pointer;
+        }
+        .game-btn:active { transform: scale(0.95); }
+        #btn-switch { background: linear-gradient(135deg, #3498db, #2980b9); font-size: 12px; padding-top: 5px;}
+        #btn-sprint { background: linear-gradient(135deg, #e67e22, #d35400); font-size: 24px; }
+
+        /* Nachrichten */
+        #big-message {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 30px; color: #f1c40f; font-weight: bold; text-shadow: 2px 2px 0px black; /* Retro Schatten */
+            opacity: 0; transition: opacity 0.5s; pointer-events: none; text-align: center;
+            font-family: monospace; /* Retro Font */
+        }
+        #big-message.attack {
+            color: #e74c3c;
+            animation: shake 0.1s infinite;
+        }
+        @keyframes shake { 0%, 100% {transform: translate(-50%, -50%);} 20% {transform: translate(-52%, -50%);} 40% {transform: translate(-48%, -50%);} 60% {transform: translate(-52%, -50%);} 80% {transform: translate(-48%, -50%);} }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="loading-screen">Lade Pixel-Welt...</div>
+
+<div id="ui-layer" style="display:none;">
+    <div class="top-panel">
+        <div class="status">🐕 <span id="dog-name">MILA</span></div>
+        <div class="status">⚡ <div class="bar-bg"><div id="stamina-bar"></div></div></div>
+        <div class="status">🐰 <div class="bar-bg"><div id="distract-bar"></div></div></div>
+    </div>
+    <div id="big-message">PERSON GEFUNDEN!</div>
+    <div class="controls-panel">
+        <div id="joystick-base"><div id="joystick-stick"></div></div>
+        <div class="btn-group">
+            <button id="btn-switch" class="game-btn" onclick="game.switchDog()">Hund<br>Wechseln</button>
+            <button id="btn-sprint" class="game-btn" onmousedown="game.sprint(true)" onmouseup="game.sprint(false)" ontouchstart="game.sprint(true)" ontouchend="game.sprint(false)">💨</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+// WICHTIG: Deaktiviert Bildglättung für knackige Pixel
+ctx.imageSmoothingEnabled = false;
+
+const ui = {
+    layer: document.getElementById('ui-layer'),
+    loading: document.getElementById('loading-screen'),
+    dogName: document.getElementById('dog-name'),
+    stamina: document.getElementById('stamina-bar'),
+    distract: document.getElementById('distract-bar'),
+    msg: document.getElementById('big-message'),
+    stick: document.getElementById('joystick-stick'),
+    base: document.getElementById('joystick-base')
+};
+
+function resize() { 
+    canvas.width = window.innerWidth; 
+    canvas.height = window.innerHeight; 
+    ctx.imageSmoothingEnabled = false; // Muss nach Resize erneut gesetzt werden
+}
+window.addEventListener('resize', resize); resize();
+
+// --- HILFSFUNKTIONEN ---
+const Utils = {
+    clamp: (v, min, max) => Math.min(Math.max(v, min), max),
+    dist: (x1, y1, x2, y2) => Math.sqrt((x2-x1)**2 + (y2-y1)**2),
+    lerp: (a, b, t) => a + (b - a) * t
+};
+
+// --- ASSET MANAGEMENT (BILDER LADEN) ---
+const Assets = {
+    // Diese Base64 Strings sind Platzhalter für echte Pixel-Art.
+    // Sie sind sehr klein (z.B. 32x32 Pixel).
+    
+    // Eine einfache grüne Kachel mit leichter Textur (32x32)
+    grassTile: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAABlBMVEVLFh4zGR8+0Tj3AAAAAnRSTlMAgJsrThgAAAA2SURBVDjLY2AYBaNgKIMxY8YwMDIyomMGAwMDIyM6G4/BqAGjBoyagZGRCYYNqBiGjQAA2W8BMSsT/B8AAAAASUVORK5CYII=',
+    
+    // Ein einfacher Pixel-Baum (64x64)
+    treeSprite: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAADFBMVEUzGR88HCEsFx0pFRv9o6iPAAAABXRSTlMAQID/v7/19XgAAACDSURBVFjD7ddLCoAwDESRjU7vf+duBIsUhK/1z0BIEWz7R3r9fJ29w41c5W+f7/cW+WwA9xYAdwYAuwIAdgYAuwIAuwIAdgYw+B2A3QEMfgeAdwCAHwD8AOA3APgNAH4DAPgBgF8A6A0A/AJAbwDgFwB6AwC7AwD6/wD6DwD+7QcQogG+R29v/QAAAABJRU5ErkJggg==',
+    
+    // PLATZHALTER für Charaktere. Dies wäre normalerweise ein großes "Spritesheet"
+    // mit vielen kleinen Bildern für jede Richtung.
+    // Hier verwenden wir einfach einen farbigen Block, um zu zeigen, wie es funktioniert.
+    charPlaceholder: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAEtJREFUWEft0LERACAMwzC6/9CMMVb0VnoX6Z45M8+913W297n+q4ACFHATUDMToIAClAQUsAlQgAKUBBSwCVCAApeAG28+gQ8L3xIBwRz6gAAAAABJRU5ErkJggg==',
+    
+    images: {},
+    loaded: 0,
+    total: 0,
+
+    load(sources, onComplete) {
+        this.total = Object.keys(sources).length;
+        this.loaded = 0;
+        if(this.total === 0) { onComplete(); return; }
+
+        for(let key in sources) {
+            const img = new Image();
+            img.onload = () => {
+                this.loaded++;
+                if(this.loaded === this.total) onComplete();
+            };
+            img.src = sources[key];
+            this.images[key] = img;
+        }
+    }
+};
+
+// --- NEUER SPRITE ZEICHNER (PIXEL ART ENGINE) ---
+const SpriteRenderer = {
+    TILE_SIZE: 32, // Größe einer Bodenkachel
+
+    // Zeichnet den gekachelten Boden
+    drawGround(ctx, camX, camY, mapW, mapH) {
+        const img = Assets.images.grassTile;
+        if(!img) return;
+        
+        // Berechne, welche Kacheln sichtbar sind
+        const startCol = Math.floor(camX / this.TILE_SIZE);
+        const endCol = Math.floor((camX + canvas.width) / this.TILE_SIZE) + 1;
+        const startRow = Math.floor(camY / this.TILE_SIZE);
+        const endRow = Math.floor((camY + canvas.height) / this.TILE_SIZE) + 1;
+
+        for(let r = startRow; r < endRow; r++) {
+            for(let c = startCol; c < endCol; c++) {
+                // Zeichne Kachel an der richtigen Position
+                ctx.drawImage(img, c * this.TILE_SIZE - camX, r * this.TILE_SIZE - camY, this.TILE_SIZE, this.TILE_SIZE);
+            }
+        }
+    },
+
+    // Generische Funktion zum Zeichnen eines Sprites von einem Sheet
+    drawSprite(ctx, img, x, y, frameW, frameH, frameX, frameY, scale = 1, centered = true) {
+        if(!img) return;
+        const drawW = frameW * scale;
+        const drawH = frameH * scale;
+        const offsetX = centered ? drawW / 2 : 0;
+        const offsetY = centered ? drawH : 0; // Pivot unten mittig
+
+        // ctx.drawImage(image, sourceX, sourceY, sourceW, sourceH, destX, destY, destW, destH)
+        ctx.drawImage(
+            img, 
+            frameX * frameW, frameY * frameH, frameW, frameH, // Quelle
+            x - offsetX, y - offsetY, drawW, drawH // Ziel
+        );
+    },
+
+    // Zeichnet einen Baum
+    drawTree(ctx, x, y, camX, camY, treeData) {
+        // Wir nutzen das placeholder Bild. In echt wäre das ein spezifisches Baum-Sprite.
+        // Wir skalieren den Platzhalter basierend auf der Baumgröße
+        const scale = treeData.r / 20; 
+        this.drawSprite(ctx, Assets.images.treeSprite, x - camX, y - camY, 64, 64, 0, 0, scale);
+    },
+
+    // Zeichnet einen Hund (Placeholder Logic)
+    drawDog(ctx, x, y, camX, camY, dogData, direction, moveFrame) {
+        // HIER WÜRDE DIE ECHTE SPRITE-LOGIK STATTFINDEN.
+        // Man würde basierend auf 'direction' und 'moveFrame' die richtige
+        // Kachel aus dem Spritesheet auswählen.
+        // Da wir nur einen Platzhalter haben, färben wir ihn einfach ein.
+        
+        ctx.save();
+        ctx.translate(x - camX, y - camY);
+        // Simpler Bounce Effekt für Bewegung
+        let bounce = Math.sin(moveFrame * 0.15) * 2; 
+        
+        // Zeichne den Platzhalter-Block
+        const size = 32;
+        ctx.fillStyle = dogData.color;
+        ctx.fillRect(-size/2, -size + bounce, size, size);
+        
+        // Kleiner Schatten
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath(); ctx.ellipse(0, 0, size/1.5, size/3, 0,0, Math.PI*2); ctx.fill();
+
+        ctx.restore();
+    },
+
+     // Zeichnet einen Menschen (Placeholder Logic)
+     drawHuman(ctx, x, y, camX, camY, type, direction, handlerType) {
+        ctx.save();
+        ctx.translate(x - camX, y - camY);
+        
+        // Wähle Farbe basierend auf Typ
+        let color = type === 'target' ? '#e74c3c' : '#f1c40f'; // Rot für Ziel, Gelb für Führer
+        if (handlerType === 'female') color = '#8B4513'; // Braun für weiblich
+
+        const size = 32;
+        const height = 48;
+        // Zeichne Platzhalter-Mensch
+        ctx.fillStyle = color;
+        ctx.fillRect(-size/2, -height, size, height);
+        
+        // Schatten
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath(); ctx.ellipse(0, 0, size/1.5, size/3, 0,0, Math.PI*2); ctx.fill();
+
+        ctx.restore();
+    },
+
+    drawRabbit(ctx, x, y, camX, camY) {
+        // Kleiner grauer Pixel-Hase
+        ctx.save();
+        ctx.translate(x - camX, y - camY);
+        ctx.fillStyle = '#bdc3c7';
+        ctx.fillRect(-5, -5, 10, 10);
+        ctx.restore();
+    }
+};
+
+// --- SPIEL KLASSE ---
+class Game {
+    constructor() {
+        this.isRunning = false;
+        // Assets laden, dann Spiel starten
+        Assets.load({
+            grassTile: Assets.grassTile,
+            treeSprite: Assets.treeSprite,
+            charPlaceholder: Assets.charPlaceholder
+        }, () => {
+            console.log("Assets geladen!");
+            ui.loading.style.display = 'none';
+            ui.layer.style.display = 'flex';
+            this.initGame();
+            this.isRunning = true;
+            this.loop();
+        });
+    }
+
+    initGame() {
+        this.mapW = 2000; this.mapH = 2000;
+        this.cam = { x:0, y:0 };
+        this.player = { x: 500, y: 500, speed: 5, stamina: 100, distraction: 0, dir: 'down', dogId: 'mila' };
+        this.hundefuehrer = { x: 500, y: 550, type: 'male' }; 
+        this.target = { x: 1500, y: 1500, scentStrength: 0 }; 
+        this.input = { x:0, y:0, sprint:false };
+        this.frame = 0;
+        this.bodoAttackTimer = 0;
+
+        this.dogs = {
+            mila: { id: 'mila', name: 'MILA', color: '#1a1a1a', vest: '#FF4500', earColor: '#333', renderer: 'MilaElfie', baseSpeed: 5, hundefuehrer: 'male' },
+            elfie: { id: 'elfie', name: 'ELFIE', color: '#6d4c41', vest: '#ADFF2F', earColor: '#D2B48C', renderer: 'MilaElfie', baseSpeed: 5, hundefuehrer: 'female' },
+            spike: { id: 'spike', name: 'SPIKE', color: '#95a5a6', vest: '#3498db', earColor: '#7f8c8d', renderer: 'Spike', baseSpeed: 4.5, hundefuehrer: 'female' }, 
+            rocco: { id: 'rocco', name: 'ROCCO', color: '#8b4513', vest: '#f39c12', earColor: '#d35400', renderer: 'Rocco', baseSpeed: 3, hundefuehrer: 'female' }, 
+            bodo: { id: 'bodo', name: 'BODO', color: '#1a1a1a', vest: '#34495e', earColor: '#333', renderer: 'Bodo', baseSpeed: 4, hundefuehrer: 'male' }
+        };
+        this.dogKeys = Object.keys(this.dogs);
+        this.player.dogId = this.dogKeys[0]; 
+        this.hundefuehrer.type = this.dogs[this.player.dogId].hundefuehrer;
+
+        this.scent = [];
+        this.rabbits = [];
+        this.trees = [];
+
+        for(let i=0; i<50; i++) this.trees.push({ x: Math.random()*this.mapW, y: Math.random()*this.mapH, r: 40+Math.random()*30, id: i });
+        for(let i=0; i<8; i++) this.rabbits.push({ x: Math.random()*this.mapW, y: Math.random()*this.mapH, tx:0, ty:0, timer:0, id: i+100 });
+
+        setInterval(() => {
+            if(!this.isRunning) return;
+            this.scent.push({ x: this.target.x, y: this.target.y, age: 0 });
+            if(this.scent.length > 150) this.scent.shift();
+        }, 600);
+
+        this.setupControls();
+    }
+
+    setupControls() {
+        let dragging = false;
+        const base = ui.base;
+        const stick = ui.stick;
+        const maxDist = 40;
+
+        const handle = (bx, by) => {
+            const rect = base.getBoundingClientRect();
+            const cx = rect.left + rect.width/2; 
+            const cy = rect.top + rect.height/2;
+            let dx = bx - cx; 
+            let dy = by - cy;
+            let dist = Utils.dist(0, 0, dx, dy);
+            
+            if(dist > maxDist) { 
+                dx = (dx/dist)*maxDist; 
+                dy = (dy/dist)*maxDist; 
+            }
+            
+            stick.style.transform = `translate(${dx}px, ${dy}px)`;
+            
+            this.input.x = dx/maxDist; 
+            this.input.y = dy/maxDist;
+        };
+        
+        const handleEnd = () => {
+            dragging = false; 
+            stick.style.transform = ``; 
+            this.input.x = 0; 
+            this.input.y = 0;
+        };
+
+        base.addEventListener('touchstart', e=>{ e.stopPropagation(); dragging=true; handle(e.touches[0].clientX, e.touches[0].clientY); }, {passive: true});
+        base.addEventListener('touchmove', e=>{ if(dragging) handle(e.touches[0].clientX, e.touches[0].clientY); }, {passive: true});
+        base.addEventListener('touchend', handleEnd);
+        base.addEventListener('touchcancel', handleEnd); 
+        base.addEventListener('mousedown', e=>{ dragging=true; handle(e.clientX, e.clientY); });
+        window.addEventListener('mousemove', e=>{ if(dragging) handle(e.clientX, e.clientY); });
+        window.addEventListener('mouseup', handleEnd);
+    }
+
+    switchDog() { 
+        let currentIndex = this.dogKeys.indexOf(this.player.dogId);
+        let nextIndex = (currentIndex + 1) % this.dogKeys.length;
+        this.player.dogId = this.dogKeys[nextIndex];
+        const newDog = this.dogs[this.player.dogId];
+        ui.dogName.innerText = newDog.name; 
+        this.player.speed = newDog.baseSpeed;
+        this.hundefuehrer.type = newDog.hundefuehrer;
+        this.bodoAttackTimer = 0;
+    }
+
+    sprint(on) { this.input.sprint = on; }
+
+    update() {
+        this.frame++;
+        let spd = this.player.speed;
+        let isBodo = this.player.dogId === 'bodo';
+
+        if(this.input.sprint && this.player.stamina > 0) { spd *= 1.8; this.player.stamina -= 0.8; }
+        else if(this.player.stamina < 100) this.player.stamina += 0.3;
+
+        let hundefuehrerAttacked = false;
+        if(isBodo) {
+            this.bodoAttackTimer++;
+            if(this.bodoAttackTimer > 150 && Math.random() < 0.025) { 
+                this.player.distraction = 100; this.player.stamina -= 20; this.bodoAttackTimer = 0; hundefuehrerAttacked = true;
+                ui.msg.innerText = "BODO ATTACKIERT HUNDEFÜHRER!"; ui.msg.classList.add('attack'); ui.msg.style.opacity = 1;
+                setTimeout(() => { ui.msg.style.opacity = 0; ui.msg.classList.remove('attack'); }, 1500);
+            }
+        } else { this.bodoAttackTimer = 0; }
+
+        let distracted = false;
+        this.rabbits.forEach(r => {
+            r.timer--;
+            if(r.timer<=0) { r.tx = r.x+(Math.random()-0.5)*500; r.ty = r.y+(Math.random()-0.5)*500; r.timer=200+Math.random()*200;}
+            let rd = Utils.dist(r.x, r.y, r.tx, r.ty);
+            if(rd>10) { r.x += ((r.tx-r.x)/rd)*2; r.y += ((r.ty-r.y)/rd)*2; }
+            if(Utils.dist(this.player.x, this.player.y, r.x, r.y) < 120) distracted = true;
+        });
+        if(distracted) this.player.distraction += 1.5; else if(this.player.distraction>0) this.player.distraction -= 0.5;
+        this.player.distraction = Utils.clamp(this.player.distraction, 0, 100);
+
+        if(this.player.distraction >= 90) { this.input.x = (Math.random()-0.5)*0.5; this.input.y = (Math.random()-0.5)*0.5; }
+        
+        let dogMoving = false;
+        if(Math.abs(this.input.x) > 0.05 || Math.abs(this.input.y) > 0.05) { 
+            this.player.x += this.input.x * spd; this.player.y += this.input.y * spd;
+            if(Math.abs(this.input.x) > Math.abs(this.input.y)) this.player.dir = this.input.x > 0 ? 'right' : 'left'; else this.player.dir = this.input.y > 0 ? 'down' : 'up';
+            dogMoving = true;
+        }
+        this.player.x = Utils.clamp(this.player.x, 0, this.mapW); this.player.y = Utils.clamp(this.player.y, 0, this.mapH);
+
+        const HUNDEFUEHRER_DISTANCE = isBodo ? 100 : 60;
+        if (dogMoving && !hundefuehrerAttacked) {
+            let targetX = this.player.x - this.input.x * HUNDEFUEHRER_DISTANCE; let targetY = this.player.y - this.input.y * HUNDEFUEHRER_DISTANCE;
+            if (Utils.dist(this.hundefuehrer.x, this.hundefuehrer.y, this.player.x, this.player.y) > HUNDEFUEHRER_DISTANCE) {
+                this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, targetX, 0.15); this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, targetY, 0.15);
+            }
+        } else if(hundefuehrerAttacked) {
+             this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, this.hundefuehrer.x, 0.0); this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, this.hundefuehrer.y, 0.0);
+        } else {
+             this.hundefuehrer.x = Utils.lerp(this.hundefuehrer.x, this.player.x, 0.03); this.hundefuehrer.y = Utils.lerp(this.hundefuehrer.y, this.player.y + 50, 0.03); 
+        }
+        
+        const SCENT_RADIUS = 150;
+        const distToTarget = Utils.dist(this.player.x, this.player.y, this.target.x, this.target.y);
+        if (distToTarget < SCENT_RADIUS) this.target.scentStrength = Utils.lerp(this.target.scentStrength, 1, 0.05); else this.target.scentStrength = Utils.lerp(this.target.scentStrength, 0, 0.05);
+        this.target.scentStrength = Utils.clamp(this.target.scentStrength, 0, 1);
+
+        this.cam.x = Utils.lerp(this.cam.x, this.player.x - canvas.width/2, 0.1);
+        this.cam.y = Utils.lerp(this.cam.y, this.player.y - canvas.height/2, 0.1);
+
+        if(distToTarget < 30) { 
+            ui.msg.innerText = "PERSON GEFUNDEN!"; ui.msg.style.opacity = 1;
+            setTimeout(() => { this.target = {x:Math.random()*this.mapW, y:Math.random()*this.mapH, scentStrength: 0}; this.scent = []; ui.msg.style.opacity = 0; }, 3000);
+        }
+
+        ui.stamina.style.width = this.player.stamina + '%';
+        ui.distract.style.width = this.player.distraction + '%';
+    }
+
+    draw() {
+        if(!this.isRunning) return;
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        let cx = Math.floor(this.cam.x); let cy = Math.floor(this.cam.y);
+
+        // 1. Boden zeichnen (Gekachelt)
+        SpriteRenderer.drawGround(ctx, cx, cy, this.mapW, this.mapH);
+
+        // 2. Spur (Pixelig)
+        this.scent.forEach(s => { s.age++;
+            ctx.fillStyle = `rgba(52, 152, 219, ${1 - s.age/200})`;
+            ctx.fillRect(s.x-cx-2, s.y-cy-2, 4, 4); // Pixelige Spur
+        });
+
+        // 3. Geruchsradius
+        const SCENT_RADIUS = 150;
+        let alpha = 0.1 + this.target.scentStrength * 0.4; 
+        ctx.fillStyle = `rgba(52, 152, 219, ${alpha})`;
+        ctx.beginPath(); ctx.arc(this.target.x - cx, this.target.y - cy, SCENT_RADIUS, 0, Math.PI*2); ctx.fill();
+
+        // 4. ENTITIES SORTIEREN (Wichtig für RPG-Look: Was weiter unten ist, wird später gezeichnet)
+        let entities = [];
+        // Bäume
+        this.trees.forEach(t => entities.push({y: t.y, type: 'tree', data: t}));
+        // Hasen
+        this.rabbits.forEach(r => entities.push({y: r.y, type: 'rabbit', data: r}));
+        // Zielperson
+        entities.push({y: this.target.y, type: 'human', data: this.target, hType: 'target'});
+        // Hundeführer
+        if (this.player.distraction < 80) {
+            entities.push({y: this.hundefuehrer.y, type: 'human', data: this.hundefuehrer, hType: 'hundefuehrer', subType: this.hundefuehrer.type});
+        }
+        // Spieler-Hund
+        entities.push({y: this.player.y, type: 'dog', data: this.player});
+
+        // Nach Y-Position sortieren
+        entities.sort((a, b) => a.y - b.y);
+
+        // Sortierte Entities zeichnen
+        entities.forEach(e => {
+            switch(e.type) {
+                case 'tree': SpriteRenderer.drawTree(ctx, e.data.x, e.data.y, cx, cy, e.data); break;
+                case 'rabbit': SpriteRenderer.drawRabbit(ctx, e.data.x, e.data.y, cx, cy); break;
+                case 'human': SpriteRenderer.drawHuman(ctx, e.data.x, e.data.y, cx, cy, e.hType, this.player.dir, e.subType); break;
+                case 'dog': 
+                    const dog = this.dogs[this.player.dogId];
+                    SpriteRenderer.drawDog(ctx, e.data.x, e.data.y, cx, cy, dog, this.player.dir, this.frame);
+                    break;
+            }
+        });
+    }
+
+    loop() { 
+        if(this.isRunning) {
+            this.update(); this.draw(); 
+        }
+        requestAnimationFrame(()=>this.loop()); 
+    }
+}
+
+// Startet das Spiel erst, wenn die Seite geladen ist
+window.onload = () => {
+    const game = new Game();
+    window.game = game; // Für HTML-Buttons zugänglich machen
+};
+</script>
+</body>
+</html>
